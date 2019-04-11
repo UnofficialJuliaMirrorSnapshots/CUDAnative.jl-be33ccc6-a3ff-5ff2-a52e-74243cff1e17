@@ -10,7 +10,6 @@ function optimize!(job::CompilerJob, mod::LLVM.Module, entry::LLVM.Function)
     function initialize!(pm)
         add_library_info!(pm, triple(mod))
         add_transform_info!(pm, tm)
-        internalize!(pm, [LLVM.name(entry)])
     end
 
     global current_job
@@ -256,7 +255,6 @@ function wrap_entry!(job::CompilerJob, mod::LLVM.Module, entry_f::LLVM.Function)
     fixup_metadata!(entry_f)
     ModulePassManager() do pm
         always_inliner!(pm)
-        verifier!(pm)
         run!(pm, mod)
     end
 

@@ -95,14 +95,15 @@ function codegen(target::Symbol, job::CompilerJob; libraries::Bool=true,
             end
         end
 
-        @timeit to[] "verification" verify(ir)
+        if ccall(:jl_is_debugbuild, Cint, ()) == 1
+            @timeit to[] "verification" verify(ir)
+        end
 
         if strip
             @timeit to[] "strip debug info" strip_debuginfo!(ir)
         end
 
         kernel_fn = LLVM.name(kernel)
-        kernel_ft = eltype(llvmtype(kernel))
     end
 
     target == :llvm && return ir, kernel
@@ -140,7 +141,6 @@ function codegen(target::Symbol, job::CompilerJob; libraries::Bool=true,
                 dyn_kernel_fn = get!(kernels, dyn_job) do
                     dyn_ir, dyn_kernel = codegen(:llvm, dyn_job; optimize=optimize, strip=strip)
                     dyn_kernel_fn = LLVM.name(dyn_kernel)
-                    dyn_kernel_ft = eltype(llvmtype(dyn_kernel))
                     link!(ir, dyn_ir)
                     changed = true
                     dyn_kernel_fn
