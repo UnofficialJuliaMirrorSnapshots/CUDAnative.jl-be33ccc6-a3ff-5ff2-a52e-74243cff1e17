@@ -105,34 +105,26 @@ end
 
 ############################################################################################
 
+endline = Sys.iswindows() ? "\r\n" : "\n"
+
 @testset "formatted output" begin
     _, out = @grab_output @on_device @cuprintf("")
     @test out == ""
-
-    endline = Sys.iswindows() ? "\r\n" : "\n"
 
     _, out = @grab_output @on_device @cuprintf("Testing...\n")
     @test out == "Testing...$endline"
 
     # narrow integer
-    _, out = @grab_output @on_device @cuprintf("Testing %d...\n", Int32(42))
-    @test out == "Testing 42...$endline"
+    _, out = @grab_output @on_device @cuprintf("Testing %d %d...\n", Int32(1), Int32(2))
+    @test out == "Testing 1 2...$endline"
 
     # wide integer
-    _, out = @grab_output @on_device @cuprintf("Testing %ld...\n", Int64(42))
-    @test out == "Testing 42...$endline"
-
-    _, out = @grab_output if Int == Int32
-        @on_device @cuprintf("Testing %lld %d...\n",
-                             blockIdx().x, threadIdx().x)
-    elseif Sys.iswindows()
-        @on_device @cuprintf("Testing %lld %lld...\n",
-                             blockIdx().x, threadIdx().x)
+    _, out = @grab_output if Sys.iswindows()
+        @on_device @cuprintf("Testing %lld %lld...\n", Int64(1), Int64(2))
     else
-        @on_device @cuprintf("Testing %ld %ld...\n",
-                             blockIdx().x, threadIdx().x)
+        @on_device @cuprintf("Testing %ld %ld...\n", Int64(1), Int64(2))
     end
-    @test out == "Testing 1 1...$endline"
+    @test out == "Testing 1 2...$endline"
 
     _, out = @grab_output @on_device begin
         @cuprintf("foo")
@@ -151,6 +143,82 @@ end
         synchronize()
     end
     @test out == "1.000000 1.000000$endline"
+end
+
+@testset "@cuprint" begin
+    # basic @cuprint/@cuprintln
+
+    _, out = @grab_output @on_device @cuprint("Hello, World\n")
+    @test out == "Hello, World$endline"
+
+    _, out = @grab_output @on_device @cuprintln("Hello, World")
+    @test out == "Hello, World$endline"
+
+
+    # argument interpolation (by the macro, so can use literals)
+
+    _, out = @grab_output @on_device @cuprint("foobar")
+    @test out == "foobar"
+
+    _, out = @grab_output @on_device @cuprint(:foobar)
+    @test out == "foobar"
+
+    _, out = @grab_output @on_device @cuprint("foo", "bar")
+    @test out == "foobar"
+
+    _, out = @grab_output @on_device @cuprint("foobar ", 42)
+    @test out == "foobar 42"
+
+    _, out = @grab_output @on_device @cuprint("foobar $(42)")
+    @test out == "foobar 42"
+
+    _, out = @grab_output @on_device @cuprint("foobar $(4)", 2)
+    @test out == "foobar 42"
+
+    _, out = @grab_output @on_device @cuprint("foobar ", 4, "$(2)")
+    @test out == "foobar 42"
+
+    _, out = @grab_output @on_device @cuprint(42)
+    @test out == "42"
+
+    _, out = @grab_output @on_device @cuprint(4, 2)
+    @test out == "42"
+
+
+    # arugment types
+
+    # we're testing the generated functions now, so can't use literals
+    function test_output(val, str)
+        canary = rand(Int32) # if we mess up the main arg, this one will print wrong
+        _, out = @grab_output @on_device @cuprint(val, " (", canary, ")")
+        @test out == "$(str) ($(Int(canary)))"
+    end
+
+    for typ in (Int16, Int32, Int64, UInt16, UInt32, UInt64)
+        test_output(typ(42), "42")
+    end
+
+    for typ in (Float32, Float64)
+        test_output(typ(42), "42.000000")
+    end
+
+    test_output(Cchar('c'), "c")
+
+    for typ in (Ptr{Cvoid}, Ptr{Int})
+        ptr = convert(typ, Int(0x12345))
+        test_output(ptr, "0x12345")
+    end
+
+
+    # escaping
+
+    kernel1(val) = (@cuprint(val); nothing)
+    _, out = @grab_output @on_device kernel1(42)
+    @test out == "42"
+
+    kernel2(val) = (@cuprintln(val); nothing)
+    _, out = @grab_output @on_device kernel2(42)
+    @test out == "42\n"
 end
 
 
@@ -231,24 +299,26 @@ end
     @test reverse(a) == Array(d_a)
 end
 
-@testset "parametrically typed" for T in [Int32, Int64, Float32, Float64]
-    function kernel(d::CuDeviceArray{T}, n) where {T}
-        t = threadIdx().x
-        tr = n-t+1
+@testset "parametrically typed" begin
+    @testset for T in [Int32, Int64, Float32, Float64]
+        function kernel(d::CuDeviceArray{T}, n) where {T}
+            t = threadIdx().x
+            tr = n-t+1
 
-        s = @cuDynamicSharedMem(T, n)
-        s[t] = d[t]
-        sync_threads()
-        d[t] = s[tr]
+            s = @cuDynamicSharedMem(T, n)
+            s[t] = d[t]
+            sync_threads()
+            d[t] = s[tr]
 
-        return
+            return
+        end
+
+        a = rand(T, n)
+        d_a = CuTestArray(a)
+
+        @cuda threads=n shmem=n*sizeof(T) kernel(d_a, n)
+        @test reverse(a) == Array(d_a)
     end
-
-    a = rand(T, n)
-    d_a = CuTestArray(a)
-
-    @cuda threads=n shmem=n*sizeof(T) kernel(d_a, n)
-    @test reverse(a) == Array(d_a)
 end
 
 @testset "alignment" begin
@@ -292,27 +362,29 @@ end
     @test reverse(a) == Array(d_a)
 end
 
-@testset "parametrically typed" for typ in [Int32, Int64, Float32, Float64]
-    function kernel(d::CuDeviceArray{T}, n) where {T}
-        t = threadIdx().x
-        tr = n-t+1
+@testset "parametrically typed" begin
+    @testset for typ in [Int32, Int64, Float32, Float64]
+        function kernel(d::CuDeviceArray{T}, n) where {T}
+            t = threadIdx().x
+            tr = n-t+1
 
-        s = @cuStaticSharedMem(T, 1024)
-        s2 = @cuStaticSharedMem(T, 1024)  # catch aliasing
+            s = @cuStaticSharedMem(T, 1024)
+            s2 = @cuStaticSharedMem(T, 1024)  # catch aliasing
 
-        s[t] = d[t]
-        s2[t] = d[t]
-        sync_threads()
-        d[t] = s[tr]
+            s[t] = d[t]
+            s2[t] = d[t]
+            sync_threads()
+            d[t] = s[tr]
 
-        return
+            return
+        end
+
+        a = rand(typ, n)
+        d_a = CuTestArray(a)
+
+        @cuda threads=n kernel(d_a, n)
+        @test reverse(a) == Array(d_a)
     end
-
-    a = rand(typ, n)
-    d_a = CuTestArray(a)
-
-    @cuda threads=n kernel(d_a, n)
-    @test reverse(a) == Array(d_a)
 end
 
 @testset "alignment" begin
@@ -406,35 +478,35 @@ end
 @testset "data movement and conversion" begin
 
 if capability(dev) >= v"3.0"
-@testset "shuffle" begin
+@testset "shuffle down" begin
 
-@eval struct AddableTuple
-    x::Int32
-    y::Int64
-    AddableTuple(val) = new(val, val*2)
-end
-Base.:(+)(a::AddableTuple, b::AddableTuple) = AddableTuple(a.x+b.x)
-
-n = 14
-
-@testset "down" for T in [Int32, Int64, Float32, Float64, AddableTuple]
-    function kernel(d::CuDeviceArray{T}, n) where {T}
-        t = threadIdx().x
-        if t <= n
-            d[t] += shfl_down(d[t], n÷2)
-        end
-        return
+    @eval struct AddableTuple
+        x::Int32
+        y::Int64
+        AddableTuple(val) = new(val, val*2)
     end
+    Base.:(+)(a::AddableTuple, b::AddableTuple) = AddableTuple(a.x+b.x)
 
-    a = T[T(i) for i in 1:n]
-    d_a = CuTestArray(a)
+    n = 14
 
-    threads = nearest_warpsize(dev, n)
-    @cuda threads=threads kernel(d_a, n)
+    @testset for T in [Int32, Int64, Float32, Float64, AddableTuple]
+        function kernel(d::CuDeviceArray{T}, n) where {T}
+            t = threadIdx().x
+            if t <= n
+                d[t] += shfl_down(d[t], n÷2)
+            end
+            return
+        end
 
-    a[1:n÷2] += a[n÷2+1:end]
-    @test a == Array(d_a)
-end
+        a = T[T(i) for i in 1:n]
+        d_a = CuTestArray(a)
+
+        threads = nearest_warpsize(dev, n)
+        @cuda threads=threads kernel(d_a, n)
+
+        a[1:n÷2] += a[n÷2+1:end]
+        @test a == Array(d_a)
+    end
 
 end
 end
