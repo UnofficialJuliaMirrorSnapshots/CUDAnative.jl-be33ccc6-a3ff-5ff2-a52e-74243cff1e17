@@ -145,8 +145,127 @@ end
                                              Tuple{Float64}, optimize=false)[1])
       @test !occursin("Float32", codeinfo_str)
     end
-end
 
+    @testset "angle" begin
+        buf  = CuTestArray(zeros(Float32))
+        cbuf = CuTestArray(zeros(Float32))
+
+        function cuda_kernel(a, x)
+            a[] = CUDAnative.angle(x)
+            return
+        end
+
+        #op(::Float32)
+        x   = rand(Float32)
+        @cuda cuda_kernel(buf, x)
+        val = Array(buf)
+        @test val[] ≈ angle(x)
+        @cuda cuda_kernel(buf, -x)
+        val = Array(buf)
+        @test val[] ≈ angle(-x)
+
+        #op(::ComplexF32)
+        x   = rand(ComplexF32)
+        @cuda cuda_kernel(cbuf, x)
+        val = Array(cbuf)
+        @test val[] ≈ angle(x)
+        @cuda cuda_kernel(cbuf, -x)
+        val = Array(cbuf)
+        @test val[] ≈ angle(-x)
+
+        #op(::Float64)
+        x   = rand(Float64)
+        @cuda cuda_kernel(buf, x)
+        val = Array(buf)
+        @test val[] ≈ angle(x)
+        @cuda cuda_kernel(buf, -x)
+        val = Array(buf)
+        @test val[] ≈ angle(-x)
+
+        #op(::ComplexF64)
+        x   = rand(ComplexF64)
+        @cuda cuda_kernel(cbuf, x)
+        val = Array(cbuf)
+        @test val[] ≈ angle(x)
+        @cuda cuda_kernel(cbuf, -x)
+        val = Array(cbuf)
+        @test val[] ≈ angle(-x)
+    end
+
+    # dictionary of key=>tuple, where the tuple should
+    # contain the cpu command and the cuda function to test.
+    ops = Dict("exp"=>(exp, CUDAnative.exp),
+               "angle"=>(angle, CUDAnative.angle),
+               "exp2"=>(exp2, CUDAnative.exp2),
+               "exp10"=>(exp10, CUDAnative.exp10),
+               "expm1"=>(expm1, CUDAnative.expm1))
+
+    @testset "$key" for key=keys(ops)
+        cpu_op, cuda_op = ops[key]
+
+        buf = CuTestArray(zeros(Float32))
+
+        function cuda_kernel(a, x)
+            a[] = cuda_op(x)
+            return
+        end
+
+        #op(::Float32)
+        x   = rand(Float32)
+        @cuda cuda_kernel(buf, x)
+        val = Array(buf)
+        @test val[] ≈ cpu_op(x)
+        @cuda cuda_kernel(buf, -x)
+        val = Array(buf)
+        @test val[] ≈ cpu_op(-x)
+
+        #op(::Float64)
+        x   = rand(Float64)
+        @cuda cuda_kernel(buf, x)
+        val = Array(buf)
+        @test val[] ≈ cpu_op(x)
+        @cuda cuda_kernel(buf, -x)
+        val = Array(buf)
+        @test val[] ≈ cpu_op(-x)
+    end
+
+    # dictionary of key=>tuple, where the tuple should
+    # contain the cpu command and the cuda function to test.
+    ops = Dict("exp"=>(exp, CUDAnative.exp),
+               "abs"=>(abs, CUDAnative.abs),
+               "abs2"=>(abs2, CUDAnative.abs2),
+               "angle"=>(angle, CUDAnative.angle),
+               "log"=>(log, CUDAnative.log))
+
+    @testset "Complex - $key" for key=keys(ops)
+        cpu_op, cuda_op = ops[key]
+
+        buf = CuTestArray(zeros(Complex{Float32}))
+
+        function cuda_kernel(a, x)
+            a[] = cuda_op(x)
+            return
+        end
+
+        #op(::ComplexF32, ::ComplexF32)
+        x   = rand(ComplexF32)
+        @cuda cuda_kernel(buf, x)
+        val = Array(buf)
+        @test val[] ≈ cpu_op(x)
+        @cuda cuda_kernel(buf, -x)
+        val = Array(buf)
+        @test val[] ≈ cpu_op(-x)
+
+        #op(::ComplexF64, ::ComplexF64)
+        x   = rand(ComplexF64)
+        @cuda cuda_kernel(buf, x)
+        val = Array(buf)
+        @test val[] ≈ cpu_op(x)
+        @cuda cuda_kernel(buf, -x)
+        val = Array(buf)
+        @test val[] ≈ cpu_op(-x)
+    end
+end
 
 
 ############################################################################################
@@ -978,6 +1097,29 @@ end
 
         @cuda threads=32 kernel(T, a)
         @test Array(a)[1] == 1
+    end
+end
+
+@testset "macro" begin
+    using CUDAnative: AtomicError
+
+    @test_throws_macro AtomicError("right-hand side of an @atomic assignment should be a call") @macroexpand begin
+        @atomic a[1] = 1
+    end
+    @test_throws_macro AtomicError("right-hand side of an @atomic assignment should be a call") @macroexpand begin
+        @atomic a[1] = b ? 1 : 2
+    end
+
+    @test_throws_macro AtomicError("right-hand side of a non-inplace @atomic assignment should reference the left-hand side") @macroexpand begin
+        @atomic a[1] = a[2] + 1
+    end
+
+    @test_throws_macro AtomicError("unknown @atomic expression") @macroexpand begin
+        @atomic wat(a[1])
+    end
+
+    @test_throws_macro AtomicError("@atomic should be applied to an array reference expression") @macroexpand begin
+        @atomic a = a + 1
     end
 end
 
