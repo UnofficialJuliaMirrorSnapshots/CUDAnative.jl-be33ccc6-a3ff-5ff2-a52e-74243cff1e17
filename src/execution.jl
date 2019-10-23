@@ -65,14 +65,16 @@ end
 world_age() = ccall(:jl_get_tls_world_age, UInt, ())
 
 # slow lookup of local method age
-function method_age(f, tt)::UInt
-    for m in Base._methods(f, tt, 1, typemax(UInt))
+function method_age(f, t)::UInt
+    for m in Base._methods(f, t, 1, typemax(UInt))
         if VERSION >= v"1.2.0-DEV.573"
             return m[3].primary_world
         else
             return m[3].min_world
         end
     end
+
+    tt = Base.to_tuple_type(t)
     throw(MethodError(f, tt))
 end
 
@@ -333,6 +335,15 @@ end
 
 const agecache = Dict{UInt, UInt}()
 const compilecache = Dict{UInt, HostKernel}()
+push!(device_reset!_listeners, (dev, ctx) -> begin
+    # invalidate compiled kernels when the device resets
+    for id in collect(keys(compilecache))
+        kernel = compilecache[id]
+        if kernel.ctx == ctx
+            delete!(compilecache, id)
+        end
+    end
+end)
 
 """
     cufunction(f, tt=Tuple{}; kwargs...)
@@ -397,6 +408,7 @@ when function changes, or when different types or keyword arguments are provided
                    Memory usage: $(Base.format_bytes(mem.local)) local, $(Base.format_bytes(mem.shared)) shared, $(Base.format_bytes(mem.constant)) constant"""
             end
             compilecache[key] = kernel
+            create_exceptions!(mod)
         end
 
         return compilecache[key]::HostKernel{f,tt}
